@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- 配置文件支持:`plugins.entries.cls-agent-observability.config` 全字段
+  (env 优先、文件兜底),修改热更新无需重启;启动打印脱敏生效摘要。
+- 插件自观测:`CLS_STATS_INTERVAL_MS`(默认 5 分钟)周期 stats 日志。
+- 文档:运维手册(重启语义)、数据分级说明、英文 README、NOTICE。
+
+### Performance
+- 会话指纹改为记忆化 per-message 哈希链:长会话每模型调用的指纹开销
+  16ms → 0.2ms(80~200×),500 轮会话 CPU 15.2s → 0.1s。
+
+### Fixed
+- 显式 `CLS_CONTENT_MODE=off` 不再误报"无法识别的值"。
+
 ## [0.1.1] - 2026-09-14
 
 ### Fixed
