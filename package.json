@@ -1,0 +1,43 @@
+{
+  "name": "@tencentcloud/openclaw-cls-agent-observability",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Export OpenClaw agent execution as Tencent Cloud CLS Agent Trace spans.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "bundle": "tsup",
+    "pack:dist": "npm run bundle && node scripts/pack-dist.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run test:unit && npm run build && node dist/src/verify/run-all.js",
+    "test:unit": "npm run build && npm run bundle && node --test dist/tests/*.test.js",
+    "verify": "npm run build && node dist/src/verify/run-scenarios.js",
+    "verify:cls": "npm run build && node dist/src/verify/send-to-cls.js",
+    "e2e": "npm run build && node scripts/run-e2e.cjs --local",
+    "e2e:cls": "npm run build && node scripts/run-e2e.cjs --cls"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/core": "2.7.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.218.0",
+    "@opentelemetry/resources": "2.7.1",
+    "@opentelemetry/sdk-trace-base": "2.7.1",
+    "@opentelemetry/semantic-conventions": "1.41.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsup": "^8.5.1",
+    "typescript": "5.9.3"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.6.5"
+    },
+    "build": {
+      "openclawVersion": "2026.6.5"
+    }
+  }
+}

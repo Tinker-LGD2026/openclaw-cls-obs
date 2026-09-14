@@ -1,0 +1,15 @@
+{
+  "id": "cls-agent-observability",
+  "name": "CLS Agent Observability",
+  "description": "Export OpenClaw agent execution as Tencent Cloud CLS Agent Trace spans.",
+  "enabledByDefault": true,
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

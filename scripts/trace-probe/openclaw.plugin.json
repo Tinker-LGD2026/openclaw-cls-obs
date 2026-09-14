@@ -1,0 +1,14 @@
+{
+  "id": "trace-probe",
+  "name": "Trace Probe",
+  "description": "Records real OpenClaw hook payloads for observability research.",
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

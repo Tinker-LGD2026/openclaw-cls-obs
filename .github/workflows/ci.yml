@@ -1,0 +1,47 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # Secrets cannot appear in step `if:`; mirror to env so fork PRs skip
+      # the gateway smoke instead of failing.
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run pack:dist
+
+      # The bundle smoke drives a real gateway, which needs the OpenClaw host
+      # (not vendored in git; fetched from npm) and a model API key.
+      - name: fetch openclaw host
+        if: env.DEEPSEEK_API_KEY != ''
+        run: |
+          mkdir -p .cache/openclaw-v2026.6.5
+          cd .cache/openclaw-v2026.6.5
+          npm pack openclaw@2026.6.5 --silent
+          tar -xzf openclaw-*.tgz
+          cp package/openclaw.mjs package/package.json .
+          cp -r package/dist .
+          mkdir -p docs
+          cp -r package/docs/reference docs/
+          cp -r package/src .
+          npm install --omit=dev --legacy-peer-deps --ignore-scripts
+      - name: bundle smoke
+        if: env.DEEPSEEK_API_KEY != ''
+        timeout-minutes: 15
+        run: node scripts/smoke-bundle.cjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
