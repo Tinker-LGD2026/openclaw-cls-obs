@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1] - 2026-09-14
+
+### Fixed
+- install.sh 写入 `hooks.allowConversationAccess=true`(缺授权时插件加载但零产出)。
+- 容器部署示例补齐启用配置落盘,镜像构建后 gateway 拉起即启用。
+
+### Changed
+- README 重写为客户视角;npm 发布切换到 OIDC Trusted Publishing(无长期 token)。
+
 ## [0.1.0] - 2026-09-14
 
 ### Added

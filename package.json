@@ -1,6 +1,6 @@
 {
   "name": "@tencentcloud/openclaw-cls-agent-observability",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Export OpenClaw agent execution as Tencent Cloud CLS Agent Trace spans.",
   "type": "module",
