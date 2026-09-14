@@ -27,6 +27,7 @@ export class Collector {
   private readonly runs: RunStateMachine;
   private readonly emitter: SpanEmitter;
   private sweepTimer?: NodeJS.Timeout;
+  private statsTimer?: NodeJS.Timeout;
   private accepting = true;
   private ingested = 0;
 
@@ -54,6 +55,16 @@ export class Collector {
       this.sweep(Date.now());
     }, SWEEP_INTERVAL_MS);
     this.sweepTimer.unref?.();
+    // Self-observability: a low-frequency stats line gives operators something
+    // to alert on (dropped spans, export pressure) between shutdowns. This is
+    // a log, not a span — self-observation must not pollute the observed data.
+    const statsInterval = this.clsConfig.statsIntervalMs ?? 300_000;
+    if (statsInterval > 0) {
+      this.statsTimer = setInterval(() => {
+        this.logger.info(`cls observability stats ${JSON.stringify(this.stats)}`);
+      }, statsInterval);
+      this.statsTimer.unref?.();
+    }
   }
 
   ingest(event: ObservationEvent): void {
@@ -92,6 +103,10 @@ export class Collector {
     if (this.sweepTimer) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = undefined;
+    }
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = undefined;
     }
     try {
       this.emitter.applyAll(this.runs.drain(Date.now()));

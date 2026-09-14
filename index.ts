@@ -17,6 +17,8 @@ type PluginLogger = {
 
 type PluginApi = {
   on: (hookName: string, handler: (...args: never[]) => unknown, opts?: unknown) => void;
+  /** Validated `plugins.entries.cls-agent-observability.config` from openclaw.json. */
+  pluginConfig?: Record<string, unknown>;
   registerService: (service: {
     id: string;
     start: (ctx: { logger?: PluginLogger }) => void | Promise<void>;
@@ -74,7 +76,7 @@ export function register(api: PluginApi): void {
     id: PLUGIN_ID,
     start(ctx) {
       const logger = ctx.logger ?? consoleLogger;
-      const outcome = acquireCollector(logger);
+      const outcome = acquireCollector(logger, api.pluginConfig);
       switch (outcome.status) {
         case "started":
           logger.info(

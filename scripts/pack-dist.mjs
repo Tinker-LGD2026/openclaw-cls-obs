@@ -17,8 +17,11 @@ if (!fs.existsSync(`${bundleFile}.map`)) {
 
 fs.copyFileSync(path.join(root, "openclaw.plugin.json"), path.join(out, "openclaw.plugin.json"));
 fs.copyFileSync(path.join(root, "LICENSE"), path.join(out, "LICENSE"));
+// Apache-2.0 redistribution requires the attribution file to ship.
+fs.copyFileSync(path.join(root, "NOTICE"), path.join(out, "NOTICE"));
 // npm renders the package page from the bundled README.
 fs.copyFileSync(path.join(root, "README.md"), path.join(out, "README.md"));
+fs.copyFileSync(path.join(root, "README_EN.md"), path.join(out, "README_EN.md"));
 
 // npm Trusted Publishing verifies `repository` against the OIDC token's repo
 // claim (a mismatch fails with 422). The checkout's origin is the one source
@@ -61,9 +64,15 @@ fs.writeFileSync(
   ) + "\n",
 );
 
-// Tarball + checksums at repo-root dist/ for CI upload.
+// Tarball + checksums at repo-root dist/ for CI upload. Stale tarballs from
+// earlier versions are removed so consumers of dist/ never mix versions.
 const repoDist = path.join(root, "dist");
 fs.mkdirSync(repoDist, { recursive: true });
+for (const entry of fs.readdirSync(repoDist)) {
+  if (/^cls-agent-observability-.+\.tar\.gz$/.test(entry)) {
+    fs.rmSync(path.join(repoDist, entry));
+  }
+}
 const tarball = path.join(repoDist, `cls-agent-observability-${pkg.version}.tar.gz`);
 // COPYFILE_DISABLE keeps macOS bsdtar from injecting ._ AppleDouble entries.
 execFileSync("tar", ["-czf", tarball, "-C", out, "."], {

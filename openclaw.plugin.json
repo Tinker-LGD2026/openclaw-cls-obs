@@ -10,6 +10,46 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "description": "CLS endpoint, e.g. https://ap-shanghai.cls.tencentcs.com (env: CLS_ENDPOINT wins)"
+      },
+      "traceTopicId": { "type": "string", "description": "CLS trace topic ID (env: CLS_TRACE_TOPIC_ID wins)" },
+      "secretId": { "type": "string", "description": "Tencent Cloud SecretId; env CLS_SECRET_ID preferred" },
+      "secretKey": { "type": "string", "description": "Tencent Cloud SecretKey; env CLS_SECRET_KEY preferred" },
+      "serviceName": { "type": "string", "default": "openclaw-gateway" },
+      "serviceVersion": { "type": "string" },
+      "serviceInstanceId": { "type": "string" },
+      "hostName": { "type": "string" },
+      "deploymentEnvironment": { "type": "string" },
+      "traceSampleRate": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
+      "contentMode": { "type": "string", "enum": ["off", "truncate", "full"], "default": "off" },
+      "contentMaxChars": { "type": "integer", "minimum": 1, "default": 1100000 },
+      "inputMessagesMode": { "type": "string", "enum": ["delta", "full"], "default": "delta" },
+      "systemPromptMode": { "type": "string", "enum": ["full", "hash", "off"], "default": "full" },
+      "captureErrorMessages": { "type": "boolean", "default": false },
+      "identityMode": { "type": "string", "enum": ["hash", "raw", "static"], "default": "hash" },
+      "identityHmacKey": { "type": "string", "description": "Required when identityMode=hash; env CLS_IDENTITY_HMAC_KEY preferred" },
+      "staticUserId": { "type": "string" },
+      "staticUserName": { "type": "string" },
+      "exportTimeoutMs": { "type": "integer", "minimum": 1, "default": 10000 },
+      "exportDelayMs": { "type": "integer", "minimum": 1, "default": 5000 },
+      "exportQueueSize": { "type": "integer", "minimum": 1, "default": 2048 },
+      "exportBatchSize": { "type": "integer", "minimum": 1, "default": 256 },
+      "statsIntervalMs": { "type": "integer", "minimum": 0, "default": 300000, "description": "Self-observability stats log interval; 0 disables" },
+      "attemptQuiescenceMs": { "type": "integer", "minimum": 1 },
+      "stateMaxActiveRuns": { "type": "integer", "minimum": 1 },
+      "stateMaxCursorSessions": { "type": "integer", "minimum": 1 },
+      "stateMaxStepsPerRun": { "type": "integer", "minimum": 1 },
+      "stateMaxModelsPerRun": { "type": "integer", "minimum": 1 },
+      "stateMaxToolsPerRun": { "type": "integer", "minimum": 1 },
+      "stateRunIdleMs": { "type": "integer", "minimum": 1 },
+      "endpointDevAllowlist": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Dev-only: extra non-CLS hosts allowed for the endpoint"
+      }
+    }
   }
 }

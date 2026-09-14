@@ -18,6 +18,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Dependency vulnerability gate: high/critical findings fail the build.
+      - run: npm audit --audit-level=high --omit=dev
       - run: npm test
       - run: npm run pack:dist
 

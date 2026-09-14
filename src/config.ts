@@ -67,7 +67,16 @@ export type ClsObservabilityConfig = {
   stateMaxToolsPerRun?: number;
   /** A run with no activity for this long is finalized (2h default). */
   stateRunIdleMs?: number;
+  /** Periodic self-observability stats log interval; 0 disables it. */
+  statsIntervalMs?: number;
 };
+
+/**
+ * Plugin configuration from `plugins.entries.<id>.config` in openclaw.json,
+ * already validated against the manifest configSchema by the host. Keys are
+ * camelCase without the `CLS_` prefix (e.g. `contentMode`, `traceTopicId`).
+ */
+export type PluginFileConfig = Record<string, unknown>;
 
 export type ConfigLoadResult =
   | { status: "ready"; config: ClsObservabilityConfig; warnings: string[] }
@@ -75,30 +84,71 @@ export type ConfigLoadResult =
   | { status: "invalid"; reason: string };
 
 /**
- * Records a warning when an env var was set but did not parse. A typo like
+ * Records a warning when a value was set but did not parse. A typo like
  * `CLS_CONTENT_MODE=truncated` silently disabling all content capture is
  * exactly the kind of misconfiguration that must be loud, not silent.
  */
-function noteFallback(
+function noteInvalid(
   warnings: string[],
-  key: string,
-  raw: string | undefined,
+  label: string,
+  raw: unknown,
   parsed: unknown,
   fallback: unknown,
 ): void {
-  if (raw !== undefined && parsed === fallback) {
-    warnings.push(`${key}="${raw}" is not a recognized value; falling back to ${String(fallback)}`);
+  if (raw !== undefined && parsed === undefined) {
+    warnings.push(
+      `${label}=${JSON.stringify(raw)} is not a recognized value; falling back to ${String(fallback)}`,
+    );
   }
 }
 
-const DEFAULT_CLS_HOST_SUFFIXES = [".cls.tencentcs.com", ".cls.tencentyun.com"];
+/** Environment wins over the plugin config file; either may be absent. */
+function pickRaw(envRaw: string | undefined, fileVal: unknown): unknown {
+  return envRaw !== undefined ? envRaw : fileVal;
+}
 
-const REQUIRED_KEYS = [
-  "CLS_ENDPOINT",
-  "CLS_TRACE_TOPIC_ID",
-  "CLS_SECRET_ID",
-  "CLS_SECRET_KEY",
-] as const;
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function asBool(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  return undefined;
+}
+
+function asStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === "string");
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  }
+  return [];
+}
+
+const DEFAULT_CLS_HOST_SUFFIXES = [".cls.tencentcs.com", ".cls.tencentyun.com"];
 
 function readTrimmed(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const raw = env[key];
@@ -109,40 +159,34 @@ function readTrimmed(env: NodeJS.ProcessEnv, key: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseContentMode(raw: string | undefined): ContentMode {
-  return raw === "truncate" || raw === "full" ? raw : "off";
+function parseContentMode(raw: unknown): ContentMode | undefined {
+  return raw === "off" || raw === "truncate" || raw === "full" ? raw : undefined;
 }
 
-function parseSystemPromptMode(raw: string | undefined): SystemPromptMode {
-  return raw === "hash" || raw === "off" ? raw : "full";
+function parseSystemPromptMode(raw: unknown): SystemPromptMode | undefined {
+  return raw === "full" || raw === "hash" || raw === "off" ? raw : undefined;
 }
 
-function parseInputMessagesMode(raw: string | undefined): InputMessagesMode {
-  return raw === "full" ? "full" : "delta";
+function parseInputMessagesMode(raw: unknown): InputMessagesMode | undefined {
+  return raw === "delta" || raw === "full" ? raw : undefined;
 }
 
-function parseIdentityMode(raw: string | undefined): IdentityMode {
-  return raw === "raw" || raw === "static" ? raw : "hash";
+function parseIdentityMode(raw: unknown): IdentityMode | undefined {
+  return raw === "hash" || raw === "raw" || raw === "static" ? raw : undefined;
 }
 
-function parseRate(raw: string | undefined): number {
-  if (!raw) {
-    return 1;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0 || value > 1) {
-    return 1;
+function parseRate(raw: unknown): number | undefined {
+  const value = asNumber(raw);
+  if (value === undefined || value < 0 || value > 1) {
+    return undefined;
   }
   return value;
 }
 
-function parsePositiveInt(raw: string | undefined, fallback: number): number {
-  if (!raw) {
-    return fallback;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    return fallback;
+function parsePositiveInt(raw: unknown): number | undefined {
+  const value = asNumber(raw);
+  if (value === undefined || value <= 0) {
+    return undefined;
   }
   return Math.floor(value);
 }
@@ -184,72 +228,130 @@ export function resolveTracesUrl(
 }
 
 /**
- * Reads configuration from the environment and immediately scrubs secrets from
- * `process.env` so agent-spawned child processes cannot inherit them.
+ * Reads configuration from the environment and the plugin config file
+ * (`plugins.entries.cls-agent-observability.config`), environment first, and
+ * immediately scrubs secrets from `process.env` so agent-spawned child
+ * processes cannot inherit them.
  */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigLoadResult {
-  const present = REQUIRED_KEYS.filter((key) => readTrimmed(env, key) !== undefined);
-  if (present.length === 0) {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  file?: PluginFileConfig,
+): ConfigLoadResult {
+  const warnings: string[] = [];
+  const pick = (envKey: string, fileKey: string): unknown =>
+    pickRaw(readTrimmed(env, envKey), file?.[fileKey]);
+
+  const endpointRaw = asString(pick("CLS_ENDPOINT", "endpoint"));
+  const topicId = asString(pick("CLS_TRACE_TOPIC_ID", "traceTopicId"));
+  const secretId = asString(pick("CLS_SECRET_ID", "secretId"));
+  const secretKey = asString(pick("CLS_SECRET_KEY", "secretKey"));
+  const missing = [
+    ["CLS_ENDPOINT / endpoint", endpointRaw],
+    ["CLS_TRACE_TOPIC_ID / traceTopicId", topicId],
+    ["CLS_SECRET_ID / secretId", secretId],
+    ["CLS_SECRET_KEY / secretKey", secretKey],
+  ].filter(([, value]) => value === undefined);
+  if (missing.length === 4) {
     scrubSecrets(env);
     return { status: "disabled", reason: "no CLS configuration present" };
   }
-  if (present.length !== REQUIRED_KEYS.length) {
-    const missing = REQUIRED_KEYS.filter((key) => !present.includes(key));
+  if (missing.length > 0) {
     scrubSecrets(env);
-    return { status: "invalid", reason: `missing required config: ${missing.join(", ")}` };
+    return {
+      status: "invalid",
+      reason: `missing required config: ${missing.map(([key]) => key).join(", ")}`,
+    };
+  }
+  if (
+    (!readTrimmed(env, "CLS_SECRET_ID") && file?.secretId !== undefined) ||
+    (!readTrimmed(env, "CLS_SECRET_KEY") && file?.secretKey !== undefined)
+  ) {
+    warnings.push(
+      "credentials were read from the plugin config file; env vars are recommended " +
+        "because the file sits on disk in plaintext",
+    );
   }
 
-  const endpointRaw = readTrimmed(env, "CLS_ENDPOINT") as string;
-  const allowInsecure = (readTrimmed(env, "CLS_ENDPOINT_DEV_ALLOWLIST") ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  const resolved = resolveTracesUrl(endpointRaw, allowInsecure);
+  const allowInsecure = asStringList(
+    pickRaw(readTrimmed(env, "CLS_ENDPOINT_DEV_ALLOWLIST"), file?.endpointDevAllowlist),
+  );
+  const resolved = resolveTracesUrl(endpointRaw as string, allowInsecure);
   if (!resolved.ok) {
     scrubSecrets(env);
     return { status: "invalid", reason: resolved.reason };
   }
 
-  const secretId = readTrimmed(env, "CLS_SECRET_ID") as string;
-  const secretKey = readTrimmed(env, "CLS_SECRET_KEY") as string;
-  const warnings: string[] = [];
-
-  const rawContentMode = readTrimmed(env, "CLS_CONTENT_MODE");
-  const contentMode = parseContentMode(rawContentMode);
-  noteFallback(warnings, "CLS_CONTENT_MODE", rawContentMode, contentMode, "off");
-  const rawSystemPromptMode = readTrimmed(env, "CLS_SYSTEM_PROMPT_MODE");
-  const systemPromptMode = parseSystemPromptMode(rawSystemPromptMode);
-  noteFallback(warnings, "CLS_SYSTEM_PROMPT_MODE", rawSystemPromptMode, systemPromptMode, "full");
-  const rawInputMessagesMode = readTrimmed(env, "CLS_INPUT_MESSAGES_MODE");
-  const inputMessagesMode = parseInputMessagesMode(rawInputMessagesMode);
-  noteFallback(warnings, "CLS_INPUT_MESSAGES_MODE", rawInputMessagesMode, inputMessagesMode, "delta");
-  const rawIdentityMode = readTrimmed(env, "CLS_IDENTITY_MODE");
-  const identityMode = parseIdentityMode(rawIdentityMode);
-  noteFallback(warnings, "CLS_IDENTITY_MODE", rawIdentityMode, identityMode, "hash");
-  const identityHmacKey = readTrimmed(env, "CLS_IDENTITY_HMAC_KEY");
-  if (identityMode === "hash" && !identityHmacKey) {
+  const rawContentMode = pick("CLS_CONTENT_MODE", "contentMode");
+  const contentMode = parseContentMode(rawContentMode) ?? "off";
+  noteInvalid(warnings, "contentMode", rawContentMode, parseContentMode(rawContentMode), "off");
+  const rawSystemPromptMode = pick("CLS_SYSTEM_PROMPT_MODE", "systemPromptMode");
+  const systemPromptMode = parseSystemPromptMode(rawSystemPromptMode) ?? "full";
+  noteInvalid(
+    warnings,
+    "systemPromptMode",
+    rawSystemPromptMode,
+    parseSystemPromptMode(rawSystemPromptMode),
+    "full",
+  );
+  const rawInputMessagesMode = pick("CLS_INPUT_MESSAGES_MODE", "inputMessagesMode");
+  const inputMessagesMode = parseInputMessagesMode(rawInputMessagesMode) ?? "delta";
+  noteInvalid(
+    warnings,
+    "inputMessagesMode",
+    rawInputMessagesMode,
+    parseInputMessagesMode(rawInputMessagesMode),
+    "delta",
+  );
+  const rawIdentityMode = pick("CLS_IDENTITY_MODE", "identityMode");
+  const parsedIdentityMode = parseIdentityMode(rawIdentityMode) ?? "hash";
+  noteInvalid(
+    warnings,
+    "identityMode",
+    rawIdentityMode,
+    parseIdentityMode(rawIdentityMode),
+    "hash",
+  );
+  const identityHmacKey = asString(pick("CLS_IDENTITY_HMAC_KEY", "identityHmacKey"));
+  if (parsedIdentityMode === "hash" && !identityHmacKey) {
     warnings.push(
-      "CLS_IDENTITY_MODE=hash requires CLS_IDENTITY_HMAC_KEY; falling back to static identity",
+      "identityMode=hash requires identityHmacKey; falling back to static identity",
     );
   }
 
-  const rawSampleRate = readTrimmed(env, "CLS_TRACE_SAMPLE_RATE");
-  const sampleRate = parseRate(rawSampleRate);
-  noteFallback(warnings, "CLS_TRACE_SAMPLE_RATE", rawSampleRate, sampleRate, 1);
+  const rawSampleRate = pick("CLS_TRACE_SAMPLE_RATE", "traceSampleRate");
+  const sampleRate = parseRate(rawSampleRate) ?? 1;
+  noteInvalid(warnings, "traceSampleRate", rawSampleRate, parseRate(rawSampleRate), 1);
+
+  const rawCaptureErrors = pick("CLS_CAPTURE_ERROR_MESSAGES", "captureErrorMessages");
+  const captureErrorMessages = asBool(rawCaptureErrors) ?? false;
+  noteInvalid(warnings, "captureErrorMessages", rawCaptureErrors, asBool(rawCaptureErrors), false);
+
+  const rawStatsInterval = pick("CLS_STATS_INTERVAL_MS", "statsIntervalMs");
+  let statsIntervalMs = 300_000;
+  if (rawStatsInterval !== undefined) {
+    const parsed = asNumber(rawStatsInterval);
+    if (parsed === undefined || parsed < 0) {
+      warnings.push(
+        `statsIntervalMs=${JSON.stringify(rawStatsInterval)} is not a non-negative number; using 300000`,
+      );
+    } else {
+      statsIntervalMs = Math.floor(parsed);
+    }
+  }
 
   const config: ClsObservabilityConfig = {
     endpoint: resolved.endpoint,
     tracesUrl: resolved.url,
-    topicId: readTrimmed(env, "CLS_TRACE_TOPIC_ID") as string,
+    topicId: topicId as string,
     authorization: `Basic ${Buffer.from(`${secretId}:${secretKey}`, "utf8").toString("base64")}`,
-    serviceName: readTrimmed(env, "CLS_SERVICE_NAME") ?? "openclaw-gateway",
-    serviceVersion: readTrimmed(env, "CLS_SERVICE_VERSION"),
+    serviceName: asString(pick("CLS_SERVICE_NAME", "serviceName")) ?? "openclaw-gateway",
+    serviceVersion: asString(pick("CLS_SERVICE_VERSION", "serviceVersion")),
     serviceInstanceId:
-      readTrimmed(env, "CLS_SERVICE_INSTANCE_ID") ??
+      asString(pick("CLS_SERVICE_INSTANCE_ID", "serviceInstanceId")) ??
       readTrimmed(env, "HOSTNAME") ??
       randomBytes(8).toString("hex"),
-    hostName: readTrimmed(env, "CLS_HOST_NAME") ?? hostname(),
-    environment: readTrimmed(env, "CLS_DEPLOYMENT_ENVIRONMENT"),
+    hostName: asString(pick("CLS_HOST_NAME", "hostName")) ?? hostname(),
+    environment: asString(pick("CLS_DEPLOYMENT_ENVIRONMENT", "deploymentEnvironment")),
     sampleRate,
     contentMode,
     systemPromptMode,
@@ -257,46 +359,70 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigLoadResu
     // 1.1M chars: tool outputs are routinely tens of KB and the conversation
     // they join accumulates over turns; a KB-scale default would truncate
     // ordinary outputs, not just pathological ones.
-    contentMaxChars: parsePositiveInt(readTrimmed(env, "CLS_CONTENT_MAX_CHARS"), 1_100_000),
-    captureErrorMessages: readTrimmed(env, "CLS_CAPTURE_ERROR_MESSAGES") === "true",
-    identityMode: identityMode === "hash" && !identityHmacKey ? "static" : identityMode,
+    contentMaxChars:
+      parsePositiveInt(pick("CLS_CONTENT_MAX_CHARS", "contentMaxChars")) ?? 1_100_000,
+    captureErrorMessages,
+    identityMode: parsedIdentityMode === "hash" && !identityHmacKey ? "static" : parsedIdentityMode,
     identityHmacKey,
-    staticUserId: readTrimmed(env, "CLS_IDENTITY_STATIC_ID"),
-    staticUserName: readTrimmed(env, "CLS_IDENTITY_STATIC_NAME"),
-    exportTimeoutMs: parsePositiveInt(readTrimmed(env, "CLS_EXPORT_TIMEOUT_MS"), 10_000),
-    scheduledDelayMs: parsePositiveInt(readTrimmed(env, "CLS_EXPORT_DELAY_MS"), 5_000),
-    maxQueueSize: parsePositiveInt(readTrimmed(env, "CLS_EXPORT_QUEUE_SIZE"), 2048),
-    maxExportBatchSize: parsePositiveInt(readTrimmed(env, "CLS_EXPORT_BATCH_SIZE"), 256),
-    ...optionalPositiveInt(env, warnings, "CLS_ATTEMPT_QUIESCENCE_MS", "attemptQuiescenceMs"),
-    ...optionalPositiveInt(env, warnings, "CLS_STATE_MAX_ACTIVE_RUNS", "stateMaxActiveRuns"),
-    ...optionalPositiveInt(env, warnings, "CLS_STATE_MAX_CURSOR_SESSIONS", "stateMaxCursorSessions"),
-    ...optionalPositiveInt(env, warnings, "CLS_STATE_MAX_STEPS_PER_RUN", "stateMaxStepsPerRun"),
-    ...optionalPositiveInt(env, warnings, "CLS_STATE_MAX_MODELS_PER_RUN", "stateMaxModelsPerRun"),
-    ...optionalPositiveInt(env, warnings, "CLS_STATE_MAX_TOOLS_PER_RUN", "stateMaxToolsPerRun"),
-    ...optionalPositiveInt(env, warnings, "CLS_STATE_RUN_IDLE_MS", "stateRunIdleMs"),
+    staticUserId: asString(pick("CLS_IDENTITY_STATIC_ID", "staticUserId")),
+    staticUserName: asString(pick("CLS_IDENTITY_STATIC_NAME", "staticUserName")),
+    exportTimeoutMs: parsePositiveInt(pick("CLS_EXPORT_TIMEOUT_MS", "exportTimeoutMs")) ?? 10_000,
+    scheduledDelayMs: parsePositiveInt(pick("CLS_EXPORT_DELAY_MS", "exportDelayMs")) ?? 5_000,
+    maxQueueSize: parsePositiveInt(pick("CLS_EXPORT_QUEUE_SIZE", "exportQueueSize")) ?? 2048,
+    maxExportBatchSize:
+      parsePositiveInt(pick("CLS_EXPORT_BATCH_SIZE", "exportBatchSize")) ?? 256,
+    statsIntervalMs,
+    ...optionalPositiveInt(warnings, "attemptQuiescenceMs", pick("CLS_ATTEMPT_QUIESCENCE_MS", "attemptQuiescenceMs")),
+    ...optionalPositiveInt(warnings, "stateMaxActiveRuns", pick("CLS_STATE_MAX_ACTIVE_RUNS", "stateMaxActiveRuns")),
+    ...optionalPositiveInt(warnings, "stateMaxCursorSessions", pick("CLS_STATE_MAX_CURSOR_SESSIONS", "stateMaxCursorSessions")),
+    ...optionalPositiveInt(warnings, "stateMaxStepsPerRun", pick("CLS_STATE_MAX_STEPS_PER_RUN", "stateMaxStepsPerRun")),
+    ...optionalPositiveInt(warnings, "stateMaxModelsPerRun", pick("CLS_STATE_MAX_MODELS_PER_RUN", "stateMaxModelsPerRun")),
+    ...optionalPositiveInt(warnings, "stateMaxToolsPerRun", pick("CLS_STATE_MAX_TOOLS_PER_RUN", "stateMaxToolsPerRun")),
+    ...optionalPositiveInt(warnings, "stateRunIdleMs", pick("CLS_STATE_RUN_IDLE_MS", "stateRunIdleMs")),
   };
 
   scrubSecrets(env);
   return { status: "ready", config, warnings };
 }
 
-/** Reads an optional positive-integer env var into a config field. */
+/** Reads an optional positive-integer value into a config field. */
 function optionalPositiveInt(
-  env: NodeJS.ProcessEnv,
   warnings: string[],
-  key: string,
-  field: string,
+  label: string,
+  raw: unknown,
 ): Record<string, number> {
-  const raw = readTrimmed(env, key);
   if (raw === undefined) {
     return {};
   }
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    warnings.push(`${key}="${raw}" is not a positive integer; using the built-in default`);
+  const value = parsePositiveInt(raw);
+  if (value === undefined) {
+    warnings.push(`${label}=${JSON.stringify(raw)} is not a positive integer; using the built-in default`);
     return {};
   }
-  return { [field]: Math.floor(value) };
+  return { [label]: value };
+}
+
+/**
+ * A stable fingerprint of the exporter-relevant configuration, used to detect
+ * config-file edits that require an exporter restart. `serviceInstanceId` is
+ * excluded because it defaults to a random value per boot.
+ */
+export function configFingerprint(config: ClsObservabilityConfig): string {
+  const { serviceInstanceId: _ignored, ...rest } = config;
+  return JSON.stringify(rest);
+}
+
+/** One-line, secret-free summary of the effective configuration. */
+export function summarizeConfig(config: ClsObservabilityConfig): string {
+  return (
+    `endpoint=${config.endpoint} topic=${config.topicId} service=${config.serviceName}` +
+    (config.environment ? ` env=${config.environment}` : "") +
+    ` content=${config.contentMode}(max=${config.contentMaxChars})` +
+    ` input=${config.inputMessagesMode} system=${config.systemPromptMode}` +
+    ` identity=${config.identityMode} sample=${config.sampleRate}` +
+    ` queue=${config.maxQueueSize} batch=${config.maxExportBatchSize}` +
+    ` stats=${config.statsIntervalMs ?? 0}ms auth=set hmac=${config.identityHmacKey ? "set" : "unset"}`
+  );
 }
 
 /** Removes CLS credentials from the environment shared with child processes. */

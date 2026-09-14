@@ -1,0 +1,24 @@
+CLS Agent Observability for OpenClaw
+Copyright 2026 Tinker-LGD2026
+
+This product includes software developed by the OpenTelemetry project
+(https://opentelemetry.io/), licensed under the Apache License 2.0.
+
+The distributed bundle (dist-bundle/index.mjs) statically includes the
+following runtime dependencies:
+
+  @opentelemetry/api@1.9.1                              Apache-2.0
+  @opentelemetry/api-logs@0.218.0                       Apache-2.0
+  @opentelemetry/core@2.7.1                             Apache-2.0
+  @opentelemetry/exporter-trace-otlp-proto@0.218.0      Apache-2.0
+  @opentelemetry/otlp-exporter-base@0.218.0             Apache-2.0
+  @opentelemetry/otlp-transformer@0.218.0               Apache-2.0
+  @opentelemetry/resources@2.7.1                        Apache-2.0
+  @opentelemetry/sdk-logs@0.218.0                       Apache-2.0
+  @opentelemetry/sdk-metrics@2.7.1                      Apache-2.0
+  @opentelemetry/sdk-trace-base@2.7.1                   Apache-2.0
+  @opentelemetry/semantic-conventions@1.41.1            Apache-2.0
+
+The full Apache License 2.0 text ships in this repository (LICENSE) and in
+each dependency's package. Development-only dependencies (typescript, tsup,
+@types/node) are not part of the distributed artifact.

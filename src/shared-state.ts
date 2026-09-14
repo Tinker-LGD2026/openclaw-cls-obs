@@ -1,7 +1,13 @@
 // Process-wide collector shared across plugin registries.
 import { DiagLogLevel, diag } from "@opentelemetry/api";
 import { Collector, type CollectorLogger } from "./collector.js";
-import { loadConfig } from "./config.js";
+import {
+  configFingerprint,
+  loadConfig,
+  summarizeConfig,
+  type ClsObservabilityConfig,
+  type PluginFileConfig,
+} from "./config.js";
 import { DEFAULT_LIMITS, type RunStateLimits } from "./domain/run-state.js";
 import { createTracerProvider } from "./telemetry/provider.js";
 
@@ -19,6 +25,8 @@ const STATE_KEY = Symbol.for("openclaw.clsAgentObservability.state.v1");
 
 type SharedState = {
   collector?: Collector;
+  /** Fingerprint of the config the running collector was built from. */
+  fingerprint?: string;
   refCount: number;
   droppedBeforeStart: number;
   initFailed: boolean;
@@ -58,18 +66,40 @@ export type StartOutcome =
  * Repeated calls from additional registries reuse the running exporter instead
  * of creating a second tracer provider and a second OTLP connection.
  */
-export function acquireCollector(logger: CollectorLogger): StartOutcome {
+export function acquireCollector(logger: CollectorLogger, pluginConfig?: PluginFileConfig): StartOutcome {
   const shared = state();
   shared.refCount += 1;
 
+  const result = loadConfig(process.env, pluginConfig);
+
   if (shared.collector) {
+    // A config-file edit reloads the plugin while a collector may still be
+    // running: swap it when the effective config actually changed, keep the
+    // last-good exporter when the new config is broken.
+    if (result.status === "ready") {
+      const nextFingerprint = configFingerprint(result.config);
+      if (nextFingerprint !== shared.fingerprint) {
+        logger.info("CLS configuration changed; restarting the exporter");
+        const previous = shared.collector;
+        const collector = startCollector(result.config, logger);
+        shared.collector = collector;
+        shared.fingerprint = nextFingerprint;
+        void previous.shutdown().catch(() => {});
+        return {
+          status: "started",
+          serviceName: result.config.serviceName,
+          contentMode: result.config.contentMode,
+        };
+      }
+    } else if (result.status !== "disabled") {
+      logger.warn(`cls observability new config is invalid (${result.reason}); keeping the running exporter`);
+    }
     return { status: "reused" };
   }
   if (shared.initFailed) {
     return { status: "invalid", reason: "previous initialization failed" };
   }
 
-  const result = loadConfig();
   if (result.status === "disabled") {
     return { status: "disabled", reason: result.reason };
   }
@@ -78,9 +108,19 @@ export function acquireCollector(logger: CollectorLogger): StartOutcome {
     return { status: "invalid", reason: result.reason };
   }
 
-  for (const warning of result.warnings) {
-    logger.warn(`cls observability config: ${warning}`);
-  }
+  const collector = startCollector(result.config, logger);
+  shared.collector = collector;
+  shared.fingerprint = configFingerprint(result.config);
+  shared.initFailed = false;
+  return {
+    status: "started",
+    serviceName: result.config.serviceName,
+    contentMode: result.config.contentMode,
+  };
+}
+
+/** Builds and starts a collector, registering shared diagnostics on the way. */
+function startCollector(config: ClsObservabilityConfig, logger: CollectorLogger): Collector {
   // BatchSpanProcessor reports a full queue ("spans were dropped") and export
   // failures only through the OTel diag channel; without this they vanish.
   // setLogger is a no-op when another plugin already owns the channel.
@@ -98,33 +138,29 @@ export function acquireCollector(logger: CollectorLogger): StartOutcome {
     logger.warn("otel diag channel already owned; queue/export warnings may go elsewhere");
   }
 
-  const handle = createTracerProvider(result.config);
+  const handle = createTracerProvider(config);
   const limits: Partial<RunStateLimits> = {};
   const limitPairs = [
-    [result.config.attemptQuiescenceMs, "attemptQuiescenceMs"],
-    [result.config.stateMaxActiveRuns, "maxActiveRuns"],
-    [result.config.stateMaxCursorSessions, "maxCursorSessions"],
-    [result.config.stateMaxStepsPerRun, "maxStepsPerRun"],
-    [result.config.stateMaxModelsPerRun, "maxModelsPerRun"],
-    [result.config.stateMaxToolsPerRun, "maxToolsPerRun"],
-    [result.config.stateRunIdleMs, "runIdleMs"],
+    [config.attemptQuiescenceMs, "attemptQuiescenceMs"],
+    [config.stateMaxActiveRuns, "maxActiveRuns"],
+    [config.stateMaxCursorSessions, "maxCursorSessions"],
+    [config.stateMaxStepsPerRun, "maxStepsPerRun"],
+    [config.stateMaxModelsPerRun, "maxModelsPerRun"],
+    [config.stateMaxToolsPerRun, "maxToolsPerRun"],
+    [config.stateRunIdleMs, "runIdleMs"],
   ] as const;
   for (const [value, key] of limitPairs) {
     if (value !== undefined) {
       (limits as Record<string, number>)[key] = value;
     }
   }
-  const collector = new Collector(result.config, handle, logger, {
+  const collector = new Collector(config, handle, logger, {
     ...DEFAULT_LIMITS,
     ...limits,
   });
   collector.start();
-  shared.collector = collector;
-  return {
-    status: "started",
-    serviceName: result.config.serviceName,
-    contentMode: result.config.contentMode,
-  };
+  logger.info(`cls observability effective config: ${summarizeConfig(config)}`);
+  return collector;
 }
 
 /** Releases a reference, shutting the exporter down when the last one goes. */
@@ -142,6 +178,9 @@ export async function releaseCollector(logger: CollectorLogger): Promise<boolean
   }
   const collector = shared.collector;
   shared.collector = undefined;
+  shared.fingerprint = undefined;
+  // A full stop clears the failure latch so a fixed config can start again.
+  shared.initFailed = false;
   if (!collector) {
     return false;
   }

@@ -1,5 +1,7 @@
 # OpenClaw CLS Agent Observability
 
+
+[English](README_EN.md)
 OpenClaw 插件：把 Agent 执行过程导出为腾讯云 CLS Agent Trace。安装即用，不改
 OpenClaw 任何配置与代码——调用链、Token 用量、工具调用、错误自动出现在 CLS
 控制台的 Agent 可观测视图里。
@@ -88,6 +90,33 @@ CLS 的五种 span:
 
 ## 完整配置项
 
+**两种配置方式,环境变量优先、配置文件兜底。** 配置文件方式写在
+`openclaw.json` 的 `plugins.entries.cls-agent-observability.config`,键名为
+下表去掉 `CLS_` 前缀的 camelCase(如 `CLS_CONTENT_MODE` → `contentMode`):
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "cls-agent-observability": {
+        "enabled": true,
+        "hooks": { "allowConversationAccess": true },
+        "config": {
+          "endpoint": "https://ap-shanghai.cls.tencentcs.com",
+          "traceTopicId": "<Trace 日志主题 ID>",
+          "contentMode": "truncate"
+        }
+      }
+    }
+  }
+}
+```
+
+- 未列在 [configSchema](openclaw.plugin.json) 里的键会被宿主拒绝(防笔误)
+- 修改配置文件后**热更新生效**,无需重启 gateway
+- 密钥建议走环境变量(配置文件是磁盘明文;从文件读取会打 warn)
+- 启动日志有一行脱敏的生效配置摘要(`effective config: ...`),排障先看它
+
 必填:
 
 | 环境变量 | 说明 |
@@ -122,6 +151,7 @@ CLS 的五种 span:
 | `CLS_STATE_MAX_STEPS_PER_RUN` | `2048` | 单 run ReAct 轮数上限 |
 | `CLS_STATE_RUN_IDLE_MS` | `7200000` | 无活动 run 收敛时限 |
 | `CLS_ATTEMPT_QUIESCENCE_MS` | `5000` | 模型 attempt 重试等待窗口 |
+| `CLS_STATS_INTERVAL_MS` | `300000` | 插件自观测 stats 日志间隔;`0` 关闭 |
 
 > 内存的主项不是元数据而是会话文本:每个活跃 run 镜像模型上下文,上界≈
 > 上下文窗口(0.5~4M 字符)。估算容器内存用「并发 run 数 × 上下文大小」。
@@ -134,6 +164,10 @@ CLS 的五种 span:
 容器 / TKE initContainer / systemd / 离线内网的完整示例见
 [docs/deployment.md](docs/deployment.md)——含「打进镜像、gateway 拉起即启用」
 的 Dockerfile 与 K8s YAML。
+
+运维参考:[docs/operations.md](docs/operations.md)(重启语义、热更新、容量规划)、
+[docs/data-classification.md](docs/data-classification.md)(各模式出域数据分级,
+供安全评审)。
 
 ## 兼容性
 
@@ -153,6 +187,9 @@ CLS 的五种 span:
    Tokens 列读的就是它;失败的模型调用可能只有零值(以 degraded 标记,不伪造)
 5. **`hooks unavailable on this host` 告警** → 宿主版本过旧,部分能力降级,
    对照 docs/compatibility.md
+6. **想看插件自身健康状况** → 默认每 5 分钟一行
+   `cls observability stats {...}`(spans 导出/丢弃、活跃 run、会话数),
+   可用于告警;`CLS_STATS_INTERVAL_MS=0` 关闭
 
 ## 安全边界
 
@@ -172,6 +209,13 @@ npm run pack:dist     # 产出零依赖 bundle 与 tarball(dist/、dist-bundle/)
 npm run e2e           # 真实 gateway 端到端(宿主自动从 npm 拉取,需 DEEPSEEK_API_KEY)
 sh scripts/compat-matrix.sh   # 双宿主版本冒烟(发布门禁)
 ```
+
+## 合规与支持
+
+- 许可证:Apache-2.0([LICENSE](LICENSE));第三方归属见 [NOTICE](NOTICE)
+- SBOM:`package-lock.json` 即完整依赖清单(运行时闭包仅 11 个 Apache-2.0 包)
+- 漏洞扫描:CI 对运行时依赖执行 `npm audit --audit-level=high`,高危即阻断
+- 问题反馈:[GitHub Issues](https://github.com/Tinker-LGD2026/openclaw-cls-obs/issues)
 
 ## 许可证
 
