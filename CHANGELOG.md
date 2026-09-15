@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-09-15
 
 ### Added
 - 配置文件支持:`plugins.entries.cls-agent-observability.config` 全字段
