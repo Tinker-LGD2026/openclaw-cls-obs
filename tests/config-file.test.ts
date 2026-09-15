@@ -223,6 +223,27 @@ test("failure latch clears after a full stop so a fixed config recovers", async 
   });
 });
 
+test("hot reload survives env secret scrubbing via the process stash", async () => {
+  // First boot reads secrets from env; scrubSecrets removes them. A config
+  // reload in the same process must still resolve credentials from the stash.
+  await withProcessEnv({}, async (apply) => {
+    const logger = silentLogger();
+    const first = acquireCollector(logger);
+    assert.equal(first.status, "started");
+    await releaseCollector(logger);
+    // env secrets are gone now; only address fields remain.
+    delete process.env.CLS_SECRET_ID;
+    delete process.env.CLS_SECRET_KEY;
+    const reloaded = acquireCollector(logger, { contentMode: "truncate" });
+    assert.equal(reloaded.status, "started");
+    if (reloaded.status === "started") {
+      assert.equal(reloaded.contentMode, "truncate");
+    }
+    await releaseCollector(logger);
+    apply(); // restore for the shared-state hygiene of later tests
+  });
+});
+
 // --- periodic stats (P1-4) -------------------------------------------------
 
 function fakeTracerHandle(): TracerHandle {

@@ -150,6 +150,23 @@ function asStringList(value: unknown): string[] {
 
 const DEFAULT_CLS_HOST_SUFFIXES = [".cls.tencentcs.com", ".cls.tencentyun.com"];
 
+/**
+ * Process-lifetime stash of credentials from the last successful load.
+ *
+ * Secrets are scrubbed from `process.env` right after reading, which collides
+ * with config hot reload: the host re-registers the plugin in the SAME process,
+ * where the env no longer carries them. The running exporter already holds the
+ * resolved Authorization header in memory, so a module-level stash adds no new
+ * exposure while letting reloads keep working. To disable the plugin, remove
+ * the endpoint/topic or flip `entries.<id>.enabled` — deleting just the secrets
+ * intentionally does NOT tear down a running exporter.
+ */
+const secretStash: {
+  secretId?: string;
+  secretKey?: string;
+  identityHmacKey?: string;
+} = {};
+
 function readTrimmed(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const raw = env[key];
   if (typeof raw !== "string") {
@@ -243,8 +260,12 @@ export function loadConfig(
 
   const endpointRaw = asString(pick("CLS_ENDPOINT", "endpoint"));
   const topicId = asString(pick("CLS_TRACE_TOPIC_ID", "traceTopicId"));
-  const secretId = asString(pick("CLS_SECRET_ID", "secretId"));
-  const secretKey = asString(pick("CLS_SECRET_KEY", "secretKey"));
+  const envOrFileSecretId = asString(pick("CLS_SECRET_ID", "secretId"));
+  const envOrFileSecretKey = asString(pick("CLS_SECRET_KEY", "secretKey"));
+  // Hot reload runs in the same process after secrets were scrubbed from env;
+  // fall back to the stash when the address (endpoint + topic) is still set.
+  const secretId = envOrFileSecretId ?? (endpointRaw && topicId ? secretStash.secretId : undefined);
+  const secretKey = envOrFileSecretKey ?? (endpointRaw && topicId ? secretStash.secretKey : undefined);
   const missing = [
     ["CLS_ENDPOINT / endpoint", endpointRaw],
     ["CLS_TRACE_TOPIC_ID / traceTopicId", topicId],
@@ -311,7 +332,8 @@ export function loadConfig(
     parseIdentityMode(rawIdentityMode),
     "hash",
   );
-  const identityHmacKey = asString(pick("CLS_IDENTITY_HMAC_KEY", "identityHmacKey"));
+  const identityHmacKey =
+    asString(pick("CLS_IDENTITY_HMAC_KEY", "identityHmacKey")) ?? secretStash.identityHmacKey;
   if (parsedIdentityMode === "hash" && !identityHmacKey) {
     warnings.push(
       "identityMode=hash requires identityHmacKey; falling back to static identity",
@@ -381,6 +403,11 @@ export function loadConfig(
     ...optionalPositiveInt(warnings, "stateRunIdleMs", pick("CLS_STATE_RUN_IDLE_MS", "stateRunIdleMs")),
   };
 
+  secretStash.secretId = secretId as string;
+  secretStash.secretKey = secretKey as string;
+  if (identityHmacKey) {
+    secretStash.identityHmacKey = identityHmacKey;
+  }
   scrubSecrets(env);
   return { status: "ready", config, warnings };
 }
